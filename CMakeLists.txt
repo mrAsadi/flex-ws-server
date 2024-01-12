@@ -3,6 +3,13 @@ project(advanced-server-flex VERSION "${BOOST_SUPERPROJECT_VERSION}" LANGUAGES C
 find_package(OpenSSL)
 link_libraries(${OPENSSL_LIBRARIES})
 
+set(CERTIFICATE_DIR ${CMAKE_BINARY_DIR}/certs)
+file(MAKE_DIRECTORY ${CERTIFICATE_DIR})
+file(COPY ${PROJECT_SOURCE_DIR}/ssl/ DESTINATION ${CMAKE_BINARY_DIR}/certs/)
+add_custom_target(generate_certificates DEPENDS
+    ${CERTIFICATE_DIR}/certs/
+)
+
 get_filename_component (BOOST_ROOT ../../ ABSOLUTE)
 add_definitions (-DBOOST_ALL_STATIC_LINK=1)
 add_definitions (-DBOOST_ASIO_NO_DEPRECATED=1)

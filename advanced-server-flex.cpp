@@ -4,19 +4,18 @@
 int main(int argc, char* argv[])
 {
     // Check command line arguments.
-    if (argc != 6)
+    if (argc != 5)
     {
         std::cerr <<
-            "Usage: advanced-server-flex <address> <port> <doc_root> <threads> <ssl_path>\n" <<
+            "Usage: advanced-server-flex <address> <port> <doc_root> <threads>\n" <<
             "Example:\n" <<
-            "    advanced-server-flex 0.0.0.0 8080 . 1 ssl/keys/path \n";
+            "    advanced-server-flex 0.0.0.0 8080 . 1\n";
         return EXIT_FAILURE;
     }
     auto const address = net::ip::make_address(argv[1]);
     auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
     auto const doc_root = std::make_shared<std::string>(argv[3]);
     auto const threads = std::max<int>(1, std::atoi(argv[4]));
-    auto const ssl_path = static_cast<std::string>(argv[5]);
 
     // The io_context is required for all I/O
     net::io_context ioc{threads};
@@ -24,7 +23,7 @@ int main(int argc, char* argv[])
     // The SSL context is required, and holds certificates
     ssl::context ctx{ssl::context::tlsv13};
     // This holds the self-signed certificate used by the server
-    setup_ssl_context(ctx,ssl_path);
+    setup_ssl_context(ctx);
 
     // Create and launch a listening port
     std::make_shared<listener>(

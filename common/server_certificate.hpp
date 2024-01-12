@@ -31,7 +31,7 @@ std::string load_private_key(const std::string &key_file)
 }
 
 // SSL context setup function
-void setup_ssl_context(boost::asio::ssl::context &ctx, const std::string &path)
+void setup_ssl_context(boost::asio::ssl::context &ctx)
 {
     // Set TLS version
     ctx.set_options(
@@ -43,13 +43,14 @@ void setup_ssl_context(boost::asio::ssl::context &ctx, const std::string &path)
         boost::asio::ssl::context::no_tlsv1_1);
 
     // Load certificate and private key from files
-    std::string cert = load_certificate(path + "/server_combined.crt");
-    std::string dh_params_file = load_certificate(path + "/dhparams_combined.pem");
+    std::string cert = load_certificate("certs/cert.pem");
+    std::string key = load_certificate("certs/key.pem");
+    std::string dh = load_certificate("certs/dh.pem");
 
     // Set certificate and private key
     ctx.use_certificate_chain(boost::asio::buffer(cert.data(), cert.size()));
-    ctx.use_private_key(boost::asio::buffer(cert.data(), cert.size()), boost::asio::ssl::context::file_format::pem);
-    ctx.use_tmp_dh(boost::asio::buffer(dh_params_file.c_str(), dh_params_file.size()));
+    ctx.use_private_key(boost::asio::buffer(key.data(), key.size()), boost::asio::ssl::context::file_format::pem);
+    ctx.use_tmp_dh(boost::asio::buffer(dh.data(), dh.size()));
 
     // Secure password callback
     ctx.set_password_callback(
