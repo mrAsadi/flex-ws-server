@@ -1,0 +1,13 @@
+import ac ;
+
+project
+    : requirements
+        [ ac.check-library /boost/beast//lib-asio-ssl : <library>/boost/beast//lib-asio-ssl/<link>static : <build>no ]
+    ;
+
+exe advanced-server-flex :
+    advanced_server_flex.cpp
+    :
+    <variant>coverage:<build>no
+    <variant>ubasan:<build>no
+    ;
