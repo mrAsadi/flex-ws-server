@@ -1,2 +1,2 @@
 openssl dhparam -out dh.pem 2048
-openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 10000 -out cert.pem -subj "//C=AU\ST=NSW\L=Sydney\O=IRobotics\CN=127.0.0.1:8083"
+openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 10000 -out cert.pem -subj "//C=AU/ST=NSW/L=Sydney/O=IRobotics/OU=Management/CN=localhost"

@@ -1,5 +1,6 @@
 #include "base.hpp"
 #include <boost/beast/version.hpp>
+#include "include/jwt-cpp/traits/boost-json/defaults.h"
 
 // Return a reasonable mime type based on the extension of a file.
 beast::string_view
@@ -74,6 +75,25 @@ handle_request(
     beast::string_view doc_root,
     http::request<Body, http::basic_fields<Allocator>>&& req)
 {
+    if (req.target() == "/api/ws" &&
+        req.method() == http::verb::get)
+    {
+        const auto token = jwt::create<jwt::traits::boost_json>()
+            .set_issuer("auth0")
+            .set_audience("aud0")
+            .set_issued_at(std::chrono::system_clock::now())
+            .set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds{3600})
+            .sign(jwt::algorithm::hs256{"secret"});
+
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+        res.set(http::field::content_type, "application/json");
+        res.keep_alive(req.keep_alive());
+        res.body() = boost::json::serialize(token); // Convert the JSON object to a string
+        res.prepare_payload();
+        return res;
+    }
+
     // Returns a bad request response
     auto const bad_request =
     [&req](beast::string_view why)
