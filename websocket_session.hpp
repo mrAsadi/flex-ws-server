@@ -1,4 +1,5 @@
 #include "base.hpp"
+#include "include/jwt-cpp/traits/boost-json/defaults.h"
 
 template <class Derived>
 class websocket_session
@@ -12,6 +13,52 @@ class websocket_session
     }
 
     beast::flat_buffer buffer_;
+
+    void close_with_401(http::request<http::string_body> &req, const std::string &error_message)
+    {
+        // Close the WebSocket connection
+        derived().ws().async_close(websocket::close_code::normal,
+                                   beast::bind_front_handler(
+                                       &websocket_session::on_close,
+                                       derived().shared_from_this()));
+
+        // Send an HTTP response with a 401 status code and an error message
+        http::response<http::string_body> res{http::status::unauthorized, req.version()};
+        res.set(http::field::server, "ir-websocket-server");
+        res.set(http::field::content_type, "application/json");
+        res.body() = "Unauthorized: " + error_message;
+        res.prepare_payload();
+
+        using response_type = typename std::decay<decltype(res)>::type;
+        auto sp = std::make_shared<response_type>(std::forward<decltype(res)>(res));
+
+        http::async_write(derived().ws().next_layer(), *sp,
+                          [self = derived().shared_from_this(), sp](
+                              beast::error_code ec, std::size_t bytes){});
+    }
+
+    std::string url_decode(const std::string &input)
+    {
+        std::string result;
+        for (std::size_t i = 0; i < input.size(); ++i)
+        {
+            if (input[i] == '%' && i + 2 < input.size() &&
+                std::isxdigit(input[i + 1]) && std::isxdigit(input[i + 2]))
+            {
+                result += static_cast<char>(std::stoi(input.substr(i + 1, 2), 0, 16));
+                i += 2;
+            }
+            else if (input[i] == '+')
+            {
+                result += ' ';
+            }
+            else
+            {
+                result += input[i];
+            }
+        }
+        return result;
+    }
 
     // Start the asynchronous operation
     template <class Body, class Allocator>
@@ -34,11 +81,32 @@ class websocket_session
                 }));
 
         // Accept the websocket handshake
-        derived().ws().async_accept(
-            req,
-            beast::bind_front_handler(
-                &websocket_session::on_accept,
-                derived().shared_from_this()));
+
+        std::string token;
+        if (req.target().find("?token=") != std::string::npos)
+        {
+            // Extract token from URI
+            token = req.target().substr(req.target().find("?token=") + 7);
+            token = url_decode(token);
+        }
+        try
+        {
+            const auto decoded_token = jwt::decode<jwt::traits::boost_json>(token);
+            const auto verify = jwt::verify<jwt::traits::boost_json>().allow_algorithm(jwt::algorithm::hs256{"secret"}).with_issuer("auth0").with_audience("aud0");
+            verify.verify(decoded_token);
+            std::cout << "succeed!" << '\n';
+
+            derived().ws().async_accept(
+                req,
+                beast::bind_front_handler(
+                    &websocket_session::on_accept,
+                    derived().shared_from_this()));
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "token error :" << e.what() << '\n';
+            close_with_401(req, e.what());
+        }
     }
 
 private:
@@ -46,10 +114,9 @@ private:
     fail(beast::error_code ec, char const *what)
     {
         std::cerr << what << ": " << ec.message() << "\n";
-        
+
         if (ec == net::ssl::error::stream_truncated)
             return;
-
     }
 
     void
@@ -112,6 +179,14 @@ private:
         // Do another read
         do_read();
     }
+    void
+    on_close(beast::error_code ec)
+    {
+        // Handle the error, if any
+        if (ec)
+            return fail(ec, "close");
+    }
+    
 
 public:
     // Start the asynchronous operation
@@ -156,9 +231,7 @@ class ssl_websocket_session
     : public websocket_session<ssl_websocket_session>,
       public std::enable_shared_from_this<ssl_websocket_session>
 {
-    websocket::stream<
-        beast::ssl_stream<beast::tcp_stream>>
-        ws_;
+    websocket::stream<beast::ssl_stream<beast::tcp_stream>> ws_;
 
 public:
     // Create the ssl_websocket_session
@@ -168,9 +241,7 @@ public:
     {
     }
 
-    // Called by the base class
-    websocket::stream<
-        beast::ssl_stream<beast::tcp_stream>> &
+    websocket::stream<beast::ssl_stream<beast::tcp_stream>> &
     ws()
     {
         return ws_;
