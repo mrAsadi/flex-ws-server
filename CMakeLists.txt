@@ -77,6 +77,7 @@ if (OPENSSL_FOUND)
         Jamfile
         listener.hpp
         json.hpp
+        shared_state.cpp
         advanced-server-flex.cpp
     )
 

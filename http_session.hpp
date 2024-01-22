@@ -1,20 +1,19 @@
 #include "base.hpp"
 #include <queue>
+#include "shared_state.hpp"
 
 // Handles an HTTP server connection.
 // This uses the Curiously Recurring Template Pattern so that
 // the same code works with both SSL streams and regular sockets.
-template <class Derived>
-class http_session
+template <class HttpSession>
+class HttpSessionManager
 {
-    std::shared_ptr<std::string const> doc_root_;
-
-    // Access the derived class, this is part of
+    // Access the httpSession class, this is part of
     // the Curiously Recurring Template Pattern idiom.
-    Derived &
-    derived()
+    HttpSession &
+    httpSession()
     {
-        return static_cast<Derived &>(*this);
+        return static_cast<HttpSession &>(*this);
     }
 
     static constexpr std::size_t queue_limit = 8; // max responses
@@ -23,19 +22,20 @@ class http_session
     // The parser is stored in an optional container so we can
     // construct it from scratch it at the beginning of each new message.
     boost::optional<http::request_parser<http::string_body>> parser_;
+    std::shared_ptr<shared_state> state_;
 
 protected:
     beast::flat_buffer buffer_;
 
 public:
     // Construct the session
-    http_session(
+    HttpSessionManager(
         beast::flat_buffer buffer,
-        std::shared_ptr<std::string const> const &doc_root)
-        : doc_root_(doc_root), buffer_(std::move(buffer))
+        std::shared_ptr<shared_state> const &state)
+        : buffer_(std::move(buffer)), state_(state)
     {
     }
-    
+
     void
     fail(beast::error_code ec, char const *what)
     {
@@ -57,17 +57,17 @@ public:
 
         // Set the timeout.
         beast::get_lowest_layer(
-            derived().stream())
+            httpSession().stream())
             .expires_after(std::chrono::seconds(30));
 
         // Read a request using the parser-oriented interface
         http::async_read(
-            derived().stream(),
+            httpSession().stream(),
             buffer_,
             *parser_,
             beast::bind_front_handler(
-                &http_session::on_read,
-                derived().shared_from_this()));
+                &HttpSessionManager::on_read,
+                httpSession().shared_from_this()));
     }
 
     void
@@ -77,7 +77,7 @@ public:
 
         // This means they closed the connection
         if (ec == http::error::end_of_stream)
-            return derived().do_eof();
+            return httpSession().do_eof();
 
         if (ec)
             return fail(ec, "read");
@@ -87,17 +87,17 @@ public:
         {
             // Disable the timeout.
             // The websocket::stream uses its own timeout settings.
-            beast::get_lowest_layer(derived().stream()).expires_never();
+            beast::get_lowest_layer(httpSession().stream()).expires_never();
 
             // Create a websocket session, transferring ownership
             // of both the socket and the HTTP request.
-            return make_websocket_session(
-                derived().release_stream(),
-                parser_->release());
+            return MakeWebsocketSession(
+                httpSession().release_stream(),
+                parser_->release(), state_);
         }
 
         // Send the response
-        queue_write(handle_request(*doc_root_, parser_->release()));
+        queue_write(handle_request(state_->doc_root(), parser_->release()));
 
         // If we aren't at the queue limit, try to pipeline another request
         if (response_queue_.size() < queue_limit)
@@ -125,11 +125,11 @@ public:
             bool keep_alive = response_queue_.front().keep_alive();
 
             beast::async_write(
-                derived().stream(),
+                httpSession().stream(),
                 std::move(response_queue_.front()),
                 beast::bind_front_handler(
-                    &http_session::on_write,
-                    derived().shared_from_this(),
+                    &HttpSessionManager::on_write,
+                    httpSession().shared_from_this(),
                     keep_alive));
         }
     }
@@ -149,7 +149,7 @@ public:
         {
             // This means we should close the connection, usually because
             // the response indicated the "Connection: close" semantic.
-            return derived().do_eof();
+            return httpSession().do_eof();
         }
 
         // Resume the read if it has been paused
@@ -165,21 +165,21 @@ public:
 //------------------------------------------------------------------------------
 
 // Handles a plain HTTP connection
-class plain_http_session
-    : public http_session<plain_http_session>,
-      public std::enable_shared_from_this<plain_http_session>
+class PlainHttpSession
+    : public HttpSessionManager<PlainHttpSession>,
+      public std::enable_shared_from_this<PlainHttpSession>
 {
     beast::tcp_stream stream_;
 
 public:
     // Create the session
-    plain_http_session(
+    PlainHttpSession(
         beast::tcp_stream &&stream,
         beast::flat_buffer &&buffer,
-        std::shared_ptr<std::string const> const &doc_root)
-        : http_session<plain_http_session>(
+        std::shared_ptr<shared_state> const &&state)
+        : HttpSessionManager<PlainHttpSession>(
               std::move(buffer),
-              doc_root),
+              std::move(state)),
           stream_(std::move(stream))
     {
     }
@@ -220,22 +220,22 @@ public:
 //------------------------------------------------------------------------------
 
 // Handles an SSL HTTP connection
-class ssl_http_session
-    : public http_session<ssl_http_session>,
-      public std::enable_shared_from_this<ssl_http_session>
+class SSLHttpSession
+    : public HttpSessionManager<SSLHttpSession>,
+      public std::enable_shared_from_this<SSLHttpSession>
 {
     beast::ssl_stream<beast::tcp_stream> stream_;
 
 public:
-    // Create the http_session
-    ssl_http_session(
+    // Create the HttpSessionManager
+    SSLHttpSession(
         beast::tcp_stream &&stream,
         ssl::context &ctx,
         beast::flat_buffer &&buffer,
-        std::shared_ptr<std::string const> const &doc_root)
-        : http_session<ssl_http_session>(
+        std::shared_ptr<shared_state> const &&state)
+        : HttpSessionManager<SSLHttpSession>(
               std::move(buffer),
-              doc_root),
+              std::move(state)),
           stream_(std::move(stream), ctx)
     {
     }
@@ -253,7 +253,7 @@ public:
             ssl::stream_base::server,
             buffer_.data(),
             beast::bind_front_handler(
-                &ssl_http_session::on_handshake,
+                &SSLHttpSession::on_handshake,
                 shared_from_this()));
     }
 
@@ -281,7 +281,7 @@ public:
         // Perform the SSL shutdown
         stream_.async_shutdown(
             beast::bind_front_handler(
-                &ssl_http_session::on_shutdown,
+                &SSLHttpSession::on_shutdown,
                 shared_from_this()));
     }
 

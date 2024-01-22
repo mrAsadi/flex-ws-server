@@ -1,26 +1,49 @@
 #include "base.hpp"
 #include "include/jwt-cpp/traits/boost-json/defaults.h"
+#include "shared_state.hpp"
 
-template <class Derived>
-class websocket_session
+template <class WebsocketSession>
+class WebsocketSessionManager
 {
-    // Access the derived class, this is part of
+    // Access the websocketSession class, this is part of
     // the Curiously Recurring Template Pattern idiom.
-    Derived &
-    derived()
+    WebsocketSession &
+    websocketSession()
     {
-        return static_cast<Derived &>(*this);
+        return static_cast<WebsocketSession &>(*this);
     }
 
     beast::flat_buffer buffer_;
+    std::shared_ptr<shared_state> state_;
+    std::vector<std::shared_ptr<std::string const>> queue_;
+    std::string connection_id;
+
+    void send(std::shared_ptr<std::string const> const &ss)
+    {
+        // Always add to queue
+        queue_.push_back(ss);
+
+        // Are we already writing?
+        if (queue_.size() > 1)
+            return;
+
+        // We are not currently writing, so send this immediately
+        websocketSession().ws().async_write(
+            net::buffer(*queue_.front()),
+            [sp = websocketSession().shared_from_this()](
+                beast::error_code ec, std::size_t bytes)
+            {
+                sp->on_write(ec, bytes);
+            });
+    }
 
     void close_with_401(http::request<http::string_body> &req, const std::string &error_message)
     {
         // Close the WebSocket connection
-        derived().ws().async_close(websocket::close_code::normal,
-                                   beast::bind_front_handler(
-                                       &websocket_session::on_close,
-                                       derived().shared_from_this()));
+        websocketSession().ws().async_close(websocket::close_code::normal,
+                                            beast::bind_front_handler(
+                                                &WebsocketSessionManager::on_close,
+                                                websocketSession().shared_from_this()));
 
         // Send an HTTP response with a 401 status code and an error message
         http::response<http::string_body> res{http::status::unauthorized, req.version()};
@@ -32,9 +55,9 @@ class websocket_session
         using response_type = typename std::decay<decltype(res)>::type;
         auto sp = std::make_shared<response_type>(std::forward<decltype(res)>(res));
 
-        http::async_write(derived().ws().next_layer(), *sp,
-                          [self = derived().shared_from_this(), sp](
-                              beast::error_code ec, std::size_t bytes){});
+        http::async_write(websocketSession().ws().next_layer(), *sp,
+                          [self = websocketSession().shared_from_this(), sp](
+                              beast::error_code ec, std::size_t bytes) {});
     }
 
     std::string url_decode(const std::string &input)
@@ -60,18 +83,36 @@ class websocket_session
         return result;
     }
 
+    std::string generate_random_string(int length)
+    {
+        const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        const int charset_size = sizeof(charset) - 1;
+        std::mt19937_64 rng(std::time(nullptr));
+        std::uniform_int_distribution<int> distribution(0, charset_size - 1);
+
+        std::string random_string;
+        random_string.reserve(length);
+
+        for (int i = 0; i < length; ++i)
+        {
+            random_string.push_back(charset[distribution(rng)]);
+        }
+
+        return random_string;
+    }
+
     // Start the asynchronous operation
     template <class Body, class Allocator>
     void
     do_accept(http::request<Body, http::basic_fields<Allocator>> req)
     {
         // Set suggested timeout settings for the websocket
-        derived().ws().set_option(
+        websocketSession().ws().set_option(
             websocket::stream_base::timeout::suggested(
                 beast::role_type::server));
 
         // Set a decorator to change the Server of the handshake
-        derived().ws().set_option(
+        websocketSession().ws().set_option(
             websocket::stream_base::decorator(
                 [](websocket::response_type &res)
                 {
@@ -96,11 +137,11 @@ class websocket_session
             verify.verify(decoded_token);
             std::cout << "succeed!" << '\n';
 
-            derived().ws().async_accept(
+            websocketSession().ws().async_accept(
                 req,
                 beast::bind_front_handler(
-                    &websocket_session::on_accept,
-                    derived().shared_from_this()));
+                    &WebsocketSessionManager::on_accept,
+                    websocketSession().shared_from_this()));
         }
         catch (const std::exception &e)
         {
@@ -132,12 +173,15 @@ private:
     void
     do_read()
     {
+        connection_id = generate_random_string(16);
+        // state_->connect(connection_id, this);
+
         // Read a message into our buffer
-        derived().ws().async_read(
+        websocketSession().ws().async_read(
             buffer_,
             beast::bind_front_handler(
-                &websocket_session::on_read,
-                derived().shared_from_this()));
+                &WebsocketSessionManager::on_read,
+                websocketSession().shared_from_this()));
     }
 
     void
@@ -147,7 +191,7 @@ private:
     {
         boost::ignore_unused(bytes_transferred);
 
-        // This indicates that the websocket_session was closed
+        // This indicates that the WebsocketSessionManager was closed
         if (ec == websocket::error::closed)
             return;
 
@@ -155,12 +199,12 @@ private:
             return fail(ec, "read");
 
         // Echo the message
-        derived().ws().text(derived().ws().got_text());
-        derived().ws().async_write(
+        websocketSession().ws().text(websocketSession().ws().got_text());
+        websocketSession().ws().async_write(
             buffer_.data(),
             beast::bind_front_handler(
-                &websocket_session::on_write,
-                derived().shared_from_this()));
+                &WebsocketSessionManager::on_write,
+                websocketSession().shared_from_this()));
     }
 
     void
@@ -186,7 +230,6 @@ private:
         if (ec)
             return fail(ec, "close");
     }
-    
 
 public:
     // Start the asynchronous operation
@@ -199,20 +242,19 @@ public:
     }
 };
 
-//------------------------------------------------------------------------------
-
-// Handles a plain WebSocket connection
-class plain_websocket_session
-    : public websocket_session<plain_websocket_session>,
-      public std::enable_shared_from_this<plain_websocket_session>
+class PlainWebsocketSessionManager
+    : public WebsocketSessionManager<PlainWebsocketSessionManager>,
+      public std::enable_shared_from_this<PlainWebsocketSessionManager>
 {
     websocket::stream<beast::tcp_stream> ws_;
+    std::shared_ptr<shared_state> state_;
 
 public:
     // Create the session
-    explicit plain_websocket_session(
-        beast::tcp_stream &&stream)
-        : ws_(std::move(stream))
+    explicit PlainWebsocketSessionManager(
+        beast::tcp_stream &&stream,
+        std::shared_ptr<shared_state> const &&state)
+        : ws_(std::move(stream)), state_(state)
     {
     }
 
@@ -222,22 +264,27 @@ public:
     {
         return ws_;
     }
+
+    std::shared_ptr<shared_state> &
+    state()
+    {
+        return state_;
+    }
 };
 
-//------------------------------------------------------------------------------
-
-// Handles an SSL WebSocket connection
-class ssl_websocket_session
-    : public websocket_session<ssl_websocket_session>,
-      public std::enable_shared_from_this<ssl_websocket_session>
+class SSLWebsocketSessionManager
+    : public WebsocketSessionManager<SSLWebsocketSessionManager>,
+      public std::enable_shared_from_this<SSLWebsocketSessionManager>
 {
     websocket::stream<beast::ssl_stream<beast::tcp_stream>> ws_;
+    std::shared_ptr<shared_state> state_;
 
 public:
-    // Create the ssl_websocket_session
-    explicit ssl_websocket_session(
-        beast::ssl_stream<beast::tcp_stream> &&stream)
-        : ws_(std::move(stream))
+    // Create the SSLWebsocketSessionManager
+    explicit SSLWebsocketSessionManager(
+        beast::ssl_stream<beast::tcp_stream> &&stream,
+        std::shared_ptr<shared_state> const &&state)
+        : ws_(std::move(stream)), state_(state)
     {
     }
 
@@ -246,26 +293,34 @@ public:
     {
         return ws_;
     }
+
+    std::shared_ptr<shared_state> &
+    state()
+    {
+        return state_;
+    }
 };
 
 //------------------------------------------------------------------------------
 
 template <class Body, class Allocator>
-void make_websocket_session(
+void MakeWebsocketSession(
     beast::tcp_stream stream,
-    http::request<Body, http::basic_fields<Allocator>> req)
+    http::request<Body, http::basic_fields<Allocator>> req,
+    std::shared_ptr<shared_state> state)
 {
-    std::make_shared<plain_websocket_session>(
-        std::move(stream))
+    std::make_shared<PlainWebsocketSessionManager>(
+        std::move(stream), std::move(state))
         ->run(std::move(req));
 }
 
 template <class Body, class Allocator>
-void make_websocket_session(
+void MakeWebsocketSession(
     beast::ssl_stream<beast::tcp_stream> stream,
-    http::request<Body, http::basic_fields<Allocator>> req)
+    http::request<Body, http::basic_fields<Allocator>> req,
+    std::shared_ptr<shared_state> state)
 {
-    std::make_shared<ssl_websocket_session>(
-        std::move(stream))
+    std::make_shared<SSLWebsocketSessionManager>(
+        std::move(stream), std::move(state))
         ->run(std::move(req));
 }

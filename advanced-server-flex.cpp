@@ -1,5 +1,6 @@
 #include "common/server_certificate.hpp"
 #include "listener.hpp"  // Include the listener header file
+#include "shared_state.hpp"
 
 int main(int argc, char* argv[])
 {
@@ -14,7 +15,7 @@ int main(int argc, char* argv[])
     }
     auto const address = net::ip::make_address(argv[1]);
     auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
-    auto const doc_root = std::make_shared<std::string>(argv[3]);
+    auto const doc_root = argv[3];
     auto const threads = std::max<int>(1, std::atoi(argv[4]));
 
     // The io_context is required for all I/O
@@ -30,7 +31,7 @@ int main(int argc, char* argv[])
         ioc,
         ctx,
         tcp::endpoint{address, port},
-        doc_root)->run();
+        std::make_shared<shared_state>(doc_root))->run();
 
     // Capture SIGINT and SIGTERM to perform a clean shutdown
     net::signal_set signals(ioc, SIGINT, SIGTERM);

@@ -1,6 +1,7 @@
 #include "request_handler.hpp"
 #include "websocket_session.hpp"
 #include "http_session.hpp"
+#include "shared_state.hpp"
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/signal_set.hpp>
@@ -47,7 +48,7 @@ class detect_session : public std::enable_shared_from_this<detect_session>
 {
     beast::tcp_stream stream_;
     ssl::context& ctx_;
-    std::shared_ptr<std::string const> doc_root_;
+    std::shared_ptr<shared_state> state_;
     beast::flat_buffer buffer_;
 
 public:
@@ -55,10 +56,10 @@ public:
     detect_session(
         tcp::socket&& socket,
         ssl::context& ctx,
-        std::shared_ptr<std::string const> const& doc_root)
+        std::shared_ptr<shared_state> const&& state)
         : stream_(std::move(socket))
         , ctx_(ctx)
-        , doc_root_(doc_root)
+        , state_(std::move(state))
     {
     }
 
@@ -100,19 +101,19 @@ public:
         if(result)
         {
             // Launch SSL session
-            std::make_shared<ssl_http_session>(
+            std::make_shared<SSLHttpSession>(
                 std::move(stream_),
                 ctx_,
                 std::move(buffer_),
-                doc_root_)->run();
+                std::move(state_))->run();
             return;
         }
 
         // Launch plain session
-        std::make_shared<plain_http_session>(
+        std::make_shared<PlainHttpSession>(
             std::move(stream_),
             std::move(buffer_),
-            doc_root_)->run();
+            std::move(state_))->run();
     }
 };
 
@@ -122,18 +123,18 @@ class listener : public std::enable_shared_from_this<listener>
     net::io_context& ioc_;
     ssl::context& ctx_;
     tcp::acceptor acceptor_;
-    std::shared_ptr<std::string const> doc_root_;
+    const std::shared_ptr<shared_state> state_;
 
 public:
     listener(
         net::io_context& ioc,
         ssl::context& ctx,
         tcp::endpoint endpoint,
-        std::shared_ptr<std::string const> const& doc_root)
+        std::shared_ptr<shared_state> const& state)
         : ioc_(ioc)
         , ctx_(ctx)
         , acceptor_(net::make_strand(ioc))
-        , doc_root_(doc_root)
+        , state_(state)
     {
         beast::error_code ec;
 
@@ -203,7 +204,7 @@ private:
             std::make_shared<detect_session>(
                 std::move(socket),
                 ctx_,
-                doc_root_)->run();
+                std::move(state_))->run();
         }
 
         // Accept another connection
